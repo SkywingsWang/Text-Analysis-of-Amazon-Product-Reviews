@@ -1,5 +1,5 @@
 # Text-Analysis-of-Amazon-Product-Reviews
-The objective of this project is to analyze a dataset of Amazon product reviews in order to understand customer sentiment and topics prevalent in the review text. The [selected dataset](https://cseweb.ucsd.edu/~jmcauley/datasets.html#amazon_reviews) for this analysis is the "5-core" dataset available from Jianmo Ni's collection of Amazon review data. This dataset contains over 75.26 million reviews from over 20 million users, wherein each product has at least five reviews. We will select a specific product category from this dataset for our analysis due to the huge volume of data.
+The objective of this project is to analyze a dataset of Amazon product reviews in order to understand customer sentiment and topics prevalent in the review text. The [selected dataset](https://nijianmo.github.io/amazon/index.html) for this analysis is the "5-core" dataset available from Jianmo Ni's collection of Amazon review data. This dataset contains over 75.26 million reviews from over 20 million users, wherein each product has at least five reviews. We will select a specific product category from this dataset for our analysis due to the huge volume of data.
 
 ## Topics
 
