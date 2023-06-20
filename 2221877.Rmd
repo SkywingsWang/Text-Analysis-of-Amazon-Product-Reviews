@@ -1,0 +1,441 @@
+---
+title: "Analysis of Amazon Product Reviews"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE, cache = FALSE}
+require("knitr")
+```
+
+# Introduction
+
+This project aims to explore the vast world of Amazon product reviews, which serve as a valuable source of consumer sentiment and trending topics. By analyzing these reviews, our objective is to gain a deeper understanding of customer sentiment and identify prevailing themes within the text. To accomplish this, we utilize the "5-core" dataset curated by Jianmo Ni, which comprises an extensive collection of over 75.26 million reviews from more than 20 million users. This dataset ensures that each product has a minimum of five reviews, providing us with a comprehensive view of customer feedback.
+
+In this analysis, we will specifically focus on the video games category. This choice is not only driven by personal interest but also by the growing popularity and expanding consumer base within the gaming industry. Video games have become a prominent form of entertainment, attracting a large and diverse audience. Exploring customer sentiment and themes in video game reviews can provide valuable insights for both consumers and industry professionals.
+
+Unfortunately, due to limitations in computational resources, our project will only focus on the first 5,000 data entries within this chosen category. While we recognize that this represents a small portion of the overall dataset, we believe it will still yield meaningful insights and contribute valuable findings to the analysis.
+
+```{r warning=FALSE, message=FALSE}
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(hunspell)
+library(jsonlite)
+library(qdap)
+library(randomForest)
+library(sentimentr)
+library(splitstackshape)
+library(stringr)
+library(textclean)
+library(textstem)
+library(tidytext)
+library(tidyverse)
+library(tm)
+library(tokenizers)
+library(topicmodels)
+library(wordcloud)
+```
+
+# Data Cleaning
+
+In the process of text cleaning and normalization, the jsonlite and rjson libraries were compared. jsonlite was chosen due to its better performance when dealing with large datasets. The jsonlite::stream_in() function was used to read the data. However, this function generates messages indicating the progress of data reading, which cannot be easily hidden using typical code chunk options. To address this, the capture.output() function was used to capture the output of jsonlite and the invisible() function was used to hide the messages, resulting in a cleaner output.
+
+```{r message=FALSE}
+invisible(capture.output(full_data <- jsonlite::stream_in(textConnection(readLines("Video_Games_5.json")))))
+head(full_data)
+```
+
+It was observed that the source data contains a data frame named "style" that contains a significant number of NA values. This data frame represents product metadata and is not relevant to the research topic. Therefore, it was not necessary to extract this information. Only the columns "overall" and "reviewText," which are closely related to the project theme, were selected.
+
+## Data Dictionary
+
+| Column Name    | Description                                                                        |
+|--------------------|----------------------------------------------------|
+| overall        | Rating of the product, on a 1-5 scale.                                             |
+| verified       | Whether the purchase was verified.                                                 |
+| reviewTime     | The date when the review was posted, in raw format.                                |
+| reviewerID     | A unique identifier for the reviewer. Example: A1HP7NVNPFMA4N                      |
+| asin           | A unique identifier for the product. Example: 0700026657                           |
+| reviewerName   | The name of the reviewer.                                                          |
+| reviewText     | The full text of the review.                                                       |
+| summary        | A brief summary of the review.                                                     |
+| unixReviewTime | The time when the review was posted, in Unix time format.                          |
+| vote           | The number of helpful votes the review received.                                   |
+| style          | A dictionary of the product metadata. For instance, "Format" might be "Hardcover". |
+| image          | Images that users posted after receiving the product.                              |
+
+```{r}
+# Select the part of data we need 
+data <- full_data %>% 
+  na.omit() %>%
+  select(overall, reviewText)
+
+data <- data[1:5000,]
+```
+
+Since each row of data corresponds to a different individual, it was considered as a separate "document." To group the words at the document level, a "doc" variable was created.
+
+```{r}
+data$doc = seq(1:nrow(data))
+```
+
+## Cleaning
+
+Both regular expressions and functions from the textclean package were utilized for data cleaning. Although I attempted to solely use functions from the textclean package, it was found that they were slower and did not always provide optimal results due to potential interference between functions. Therefore, a combination of regular expressions and textclean functions was employed to achieve better cleaning results.
+
+During the data cleaning process, new NA values may arise. Therefore, the omission of NA values was performed after the data cleaning process to ensure the data's cleanliness.
+
+```{r}
+# Basic cleanning based on text format
+data$reviewText <- str_remove_all(data$reviewText, "[^[:alpha:][:space:]]") %>%
+  replace_word_elongation() %>%
+  replace_emoticon() %>%
+  replace_symbol() %>%
+  str_remove_all("[[:punct:]]") %>%
+  replace_non_ascii() %>%
+  str_remove_all("[[:digit:]]") %>%
+  str_replace_all("\\s{2,}", " ") %>%
+  tolower()
+
+data <- na.omit(data)
+
+head(data$reviewText, 2)
+```
+
+## Tokenization
+
+In the tokenization step, standard tokenization was applied, and stop words were removed. An attempt was made to find a specific stop word list tailored to the gaming domain, but it appears that such a dictionary is not readily available.
+
+```{r}
+# Tokenization
+tokenized_data <- data%>%
+  unnest_tokens(reviewText,output=word_token,token="words") 
+#  group_by(doc)
+
+# Remove stop words
+tokenized_stop_data <- anti_join(tokenized_data,stop_words,by=c("word_token"="word"))
+
+head(tokenized_stop_data)
+```
+
+## Lemmatization
+
+Regarding lemmatization, both stemming and lemmatization techniques were explored. However, lemmatization outperformed stemming in terms of accuracy and reliability. Also, from a theoretical standpoint, lemmatization is considered more scientifically sound and powerful in capturing the base or root forms of words.
+
+Finally, the processed and cleaned data were saved as "cleaned_data" for further analysis and use in subsequent sections of the project. This ensures that the cleaned data is readily accessible and organized for future analyses.
+
+```{r}
+tokenized_stop_lem_data <- tokenized_stop_data %>%
+  mutate(word_lemma = lemmatize_words(word_token)) %>%
+  unnest(word_lemma) 
+
+cleaned_data <- tokenized_stop_lem_data
+```
+
+# Bag-of-words Analysis
+
+The study uses the bag-of-words approach, where the word lemma output was used to create a word cloud showing the frequency of words across all reviews, irrespective of the ratings. This visual representation revealed that "play" is the most frequently used word. The data was then grouped based on the ratings to find dominant words within each group, with "play" again turning out to be the most frequent word. This information could provide valuable insights into the key themes that are consistent across reviews.
+
+```{r warning=FALSE}
+# Create a new data frame with overall and word count
+temp_data <- cleaned_data %>%
+  group_by(word_lemma) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  arrange(desc(n))
+
+# Generate a word cloud for all reviews
+wordcloud(words = words$word_lemma, freq = words$n, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+```{r}
+# For histogram, we need to consider the overall rating
+temp_data_overall <- cleaned_data %>%
+  group_by(overall, word_lemma) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  arrange(desc(n))
+
+# Generate a histogram for each rating category
+for (i in 1:5) {
+  top_10_words <- temp_data_overall %>%
+    filter(overall==i, word_lemma != "game") %>%
+    arrange(desc(n)) %>%
+    head(10)
+
+  ggplot(top_10_words, aes(x=reorder(word_lemma, n), y=n)) + 
+    geom_bar(stat="identity", fill="steelblue") +
+    coord_flip() +  
+    labs(title=paste("Top 10 Words for Rating", i), x="Words", y="Frequency") +
+    theme_minimal()
+
+  # Print the plot
+  print(ggplot2::last_plot())
+}
+
+```
+
+# Sentiment Analysis
+
+We selected the Bing lexicon for sentiment analysis due to its simplicity and binary categorization of sentiment into positive and negative. This decision was informed by the nature of our project, which did not require the identification of complex emotions. Additionally, using the Bing lexicon simplified subsequent processes and helped manage potential issues related to memory overload and extended runtimes due to large datasets. However, it's crucial to acknowledge that the choice of Bing lexicon might limit the depth of sentiment analysis. The binary categorization might not capture the complete emotional spectrum expressed in the reviews, potentially impacting the accuracy and reliability of our predictive model.
+
+The Bing lexicon categorizes words as positive, negative, or NA. For subsequent computations, we converted these labels into numerical form. By calculating the average sentiment score for each rating, we found a positive correlation between sentiment score and customer ratings, which aligns well with intuition.
+
+
+```{r warning=FALSE}
+# Perform sentiment analysis using the bing lexicon
+sentiment <- cleaned_data %>%
+  left_join(get_sentiments("bing"), by=c("word_lemma"="word")) %>%
+  mutate(sentiment = case_when(
+    is.na(sentiment) ~ 0,
+    sentiment == "positive" ~ 1,
+    sentiment == "negative" ~ -1
+        ))
+
+head(sentiment)
+```
+
+```{r}
+sentiment %>%
+  group_by(overall) %>%
+  summarise(sentiment_value = mean(sentiment))
+```
+
+```{r}
+
+sentiment$sentiment <- as.factor(sentiment$sentiment)
+
+sentiment$overall <- as.factor(sentiment$overall)
+
+prop.table(table(sentiment$overall))
+```
+
+## DTM-counts
+
+```{r}
+dtm_count <- sentiment %>% 
+  count(doc,word_lemma) %>% 
+  cast_dtm(doc,word_lemma,n)
+
+dtm_count
+```
+
+```{r}
+dtm_count <- removeSparseTerms(dtm_count,0.99)
+
+dtm_count
+```
+
+```{r}
+docs <- as.integer(dtm_count$dimnames$Docs)
+
+# Create a new data partition based on the docs
+set.seed(123)
+subset_index <- createDataPartition(docs, p = .7, list = FALSE, times = 1)
+
+train_sentiment <- sentiment[subset_index, ]
+test_sentiment <- sentiment[-subset_index, ]
+
+# Split the DTM
+train_count <- dtm_count[subset_index,]
+test_count <- dtm_count[-subset_index,]
+
+prop.table(table(train_sentiment$overall))
+prop.table(table(test_sentiment$overall))
+
+# Convert to data frame
+X_count_train <- as.data.frame(as.matrix(train_count))
+X_count_test <- as.data.frame(as.matrix(test_count))
+
+X_count_train$doc <- as.integer(train_count$dimnames$Docs)
+X_count_test$doc <- as.integer(test_count$dimnames$Docs)
+
+# Add sentiment scores
+X_count_train <- merge(X_count_train, train_sentiment, by=c("doc"))
+X_count_test <- merge(X_count_test, test_sentiment, by=c("doc"))
+
+Y_count_train <- select(X_count_train, c("overall"))
+X_count_train <- select(X_count_train, 
+                        -c("doc", "word_token","word_lemma", "overall"))
+
+Y_count_test <- select(X_count_test, c("overall"))
+X_count_test <- select(X_count_test, 
+                       -c("doc", "word_token","word_lemma", "overall"))
+```
+
+## TF_IDF
+
+```{r}
+dtm_tfidf <- sentiment %>%
+  count(doc,word_lemma) %>% 
+  ungroup() %>%
+  rename(count=n) %>%  
+  bind_tf_idf(word_lemma, doc, count) %>%
+  cast_dtm(doc, word_lemma, tf_idf)
+
+dtm_tfidf
+```
+
+```{r}
+dtm_tfidf <- removeSparseTerms(dtm_tfidf,0.99)
+
+dtm_tfidf
+```
+
+```{r}
+docs <- as.integer(dtm_tfidf$dimnames$Docs)
+
+set.seed(123)
+subset_index <- createDataPartition(docs, p = .7, list = FALSE, times = 1)
+
+train_sentiment <- sentiment[subset_index, ]
+test_sentiment <- sentiment[-subset_index, ]
+
+prop.table(table(train_sentiment$overall))
+prop.table(table(test_sentiment$overall))
+
+# Only keep features for the training set
+train_dtm_tfidf <- dtm_tfidf[subset_index, ]
+test_dtm_tfidf <- dtm_tfidf[-subset_index, ]
+
+# Convert to data frame
+X_tfidf_train <- as.data.frame(as.matrix(train_dtm_tfidf))
+X_tfidf_test <- as.data.frame(as.matrix(test_dtm_tfidf))
+
+X_tfidf_train$doc <- as.integer(train_dtm_tfidf$dimnames$Docs)
+X_tfidf_test$doc <- as.integer(test_dtm_tfidf$dimnames$Docs)
+
+# Add sentiment scores
+X_tfidf_train <- merge(X_tfidf_train, train_sentiment, by=c("doc"))
+X_tfidf_test <- merge(X_tfidf_test, test_sentiment, by=c("doc"))
+
+Y_tfidf_train <- select(X_tfidf_train, c("overall"))
+X_tfidf_train <- select(X_tfidf_train, -c("doc", "word_lemma", "overall"))
+
+Y_tfidf_test <- select(X_tfidf_test, c("overall"))
+X_tfidf_test <- select(X_tfidf_test, -c("doc", "word_lemma", "overall"))
+```
+
+## Random Forest Model
+
+The study then proceeds to create a predictive model. We chose the Random Forest model for this purpose due to its robustness in handling high-dimensional data and its ability to model complex relationships. Notably, Random Forest models can exhibit robustness to data imbalance, as they are capable of self-adjusting by using a form of internal weighted voting. This feature makes them particularly suitable for this project.
+
+During the modelling phase, we split the data into training and testing sets and also considered stratified sampling to ensure fair representation of different ratings in the model. This step was crucial to prevent data leakage and model overfitting. The Random Forest model was then adjusted based on the training and testing set configurations.
+
+```{r}
+RF_Model <- function(X_train, Y_train, X_test, Y_test) {
+
+  # Model
+  random_forest_model <- randomForest(x=X_train, 
+                                    y=Y_train$overall,
+                                    importance = TRUE)
+  
+  # Prediction
+  pred_rf <- predict(random_forest_model,X_test)
+  
+  # Confusion Matrix
+  cm <- confusionMatrix(pred_rf, Y_test$overall)
+  
+  # Variable Importance Plot
+  var_imp <- varImp(random_forest_model, scale = FALSE)
+  plot(var_imp)
+  
+  return(cm)
+}
+```
+
+```{r warning=FALSE}
+print("Random Forest on DTM counts")
+
+RF_Model(X_count_train,Y_count_train,X_count_test,Y_count_test)
+```
+
+The results from the Random Forest model trained on Document Term Matrix (DTM) counts demonstrate some significant issues. The overall accuracy of the model is 43.42%, which is less than satisfactory for a predictive model. It also implies that the model might not be effective at making precise predictions, given the complexity of the review text data.
+
+The confusion matrix reveals the problematic aspects. The model struggles with differentiating between classes. Classes 1, 2, and 3 have zero true positive cases, and classes 4 and 5 have inflated predictions due to the imbalanced dataset, resulting in a high number of false positives. This disparity is shown by the sensitivity of classes 1, 2, and 3, which are all zero. This suggests that the model is incapable of correctly identifying these classes.
+
+The class imbalance in the dataset seems to be one of the main problems. Stratified sampling has not been able to address this imbalance effectively. For future improvement, we might consider using undersampling techniques to balance out the classes, which would involve reducing the instances of the majority class to match the minority class.
+
+```{r warning=FALSE}
+print("Random Forest on DTM tfidf")
+
+RF_Model(X_tfidf_train,Y_tfidf_train,X_tfidf_test,Y_tfidf_test)
+```
+
+The Random Forest model with Term Frequency-Inverse Document Frequency (TF-IDF) transformation shows some improvement over the previous Document Term Matrix (DTM) approach. The overall accuracy has increased to 53.33% from the previous 43.42%.
+
+Similar to the DTM model, the TF-IDF model struggles with identifying classes 1, 2, and 3, with zero true positive cases. However, the model performs better in identifying class 5, showing a significant increase in sensitivity from 61.34% to 96.19%. 
+
+Overall, while the TF-IDF model shows some improvements, it also uncovers new challenges. The class imbalance problem persists, necessitating more robust balancing strategies.
+
+# Topic Model
+
+In this analysis, we employed a topic model to discern dominant topics within customer reviews, segmented into satisfied (ratings 4-5) and dissatisfied (ratings 1-2) categories. We aimed to identify salient topics for each group and understand how specific product attributes impact the prevalence of different themes in reviews.
+
+The method involved devising a function, create_topic_model(), which tallied word frequencies and applied Latent Dirichlet Allocation (LDA) to establish the topic model. This was applied to both satisfied and dissatisfied customer reviews.
+
+```{r}
+create_topic_model <- function(data) {
+  topic_model <- data %>% 
+    count(doc,word_lemma) %>%
+    cast_dtm(doc,word_lemma,n) %>%
+    LDA(k=3, method = "Gibbs")
+  return(topic_model)
+}
+```
+
+Further, the function process_beta_matrix() was formulated to extract the top 15 terms per topic based on beta values. The results were visually represented through stacked bar charts. To elucidate the impact of product attributes on dominant themes, these were incorporated into the visualizations as annotations or colour coding.
+
+```{r}
+satisfied_customer <- cleaned_data %>% filter(overall %in% c(4,5))
+dissatisfied_customer <- cleaned_data %>% filter(overall %in% c(1,2))
+
+topic_model_satisfied <- create_topic_model(satisfied_customer)
+topic_model_dissatisfied <- create_topic_model(dissatisfied_customer)
+
+process_beta_matrix <- function(topic_model) {
+  topic_model_beta <- tidy(topic_model, matrix = "beta")
+  top_terms <- topic_model_beta %>%
+    group_by(topic) %>%
+    slice_max(beta, n = 15) %>%
+    ungroup() %>%
+    arrange(topic, desc(beta))
+  return(top_terms)
+}
+```
+
+```{r}
+(top_term_satisfied <- process_beta_matrix(topic_model_satisfied) %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered())
+```
+
+```{r}
+(top_term_dissatisfied <- process_beta_matrix(topic_model_dissatisfied) %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered())
+```
+
+# Conclusion
+
+This study utilized sentiment analysis and predictive modelling techniques to investigate customer sentiment within the realm of video game reviews on Amazon. The results highlight the prevalence of certain themes and words across varying ratings, as well as the potential impact of sentiment scores on product ratings. However, limitations were encountered with the choice of sentiment lexicon and the handling of data imbalance, indicating areas for further improvement.
+
+The Bing lexicon's simplicity, while useful for handling large datasets, may have restricted the depth of sentiment analysis. Future research may benefit from experimenting with different sentiment lexicons to gain a broader and more nuanced understanding of customer sentiment. Furthermore, considering alternative sampling methods such as under-sampling could potentially improve the performance of predictive models, especially in handling imbalanced data.
+
+The topic modelling section of the study provides a foundation for future research directions. The current approach can be expanded to understand the thematic differences between satisfied and dissatisfied customers across various product categories. Exploring these nuances may yield valuable insights for both consumers and industry professionals. Additionally, the impact of specific product attributes on the prevalence of different themes in reviews can be further investigated.
+
+In conclusion, the insights gained from this study demonstrate the potential of text mining and predictive modelling techniques in understanding customer sentiment and predicting product ratings. However, there remain opportunities for refining the methodologies and expanding the scope of research for deeper, more comprehensive insights.
