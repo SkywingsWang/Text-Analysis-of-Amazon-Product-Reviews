@@ -151,7 +151,10 @@ temp_data <- cleaned_data %>%
   summarise(n = n(), .groups = 'drop') %>%
   arrange(desc(n))
 
-# Generate a word cloud for all reviews
+# Avoid 'game' being too dominant
+words <- temp_data %>%
+  filter(word_lemma != "game")
+
 wordcloud(words = words$word_lemma, freq = words$n, min.freq = 1,
           max.words=200, random.order=FALSE, rot.per=0.35, 
           colors=brewer.pal(8, "Dark2"))
